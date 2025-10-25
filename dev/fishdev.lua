@@ -1,25 +1,25 @@
-local Logger       = loadstring(game:HttpGet("https://raw.githubusercontent.com/jabusuko/a/refs/heads/main/utils/logger.lua"))()
+local Logger       = loadstring(game:HttpGet("https://raw.githubusercontent.com/c3iv3r/a/refs/heads/main/utils/logger.lua"))()
 
 -- FOR PRODUCTION: Uncomment this line to disable all logging
---Logger.disableAll()
+Logger.disableAll()
 
 -- FOR DEVELOPMENT: Enable all logging
-Logger.enableAll()
+--Logger.enableAll()
 
 local mainLogger = Logger.new("Main")
 local featureLogger = Logger.new("FeatureManager")
 
 --// Library
-local Noctis = loadstring(game:HttpGet("https://raw.githubusercontent.com/jabusuko/a/refs/heads/main/lib.lua"))()
+local Noctis = loadstring(game:HttpGet("https://raw.githubusercontent.com/c3iv3r/a/refs/heads/main/lib.lua"))()
 
 -- ===========================
 -- LOAD HELPERS & FEATURE MANAGER
 -- ===========================
 mainLogger:info("Loading Helpers...")
-local Helpers = loadstring(game:HttpGet("https://raw.githubusercontent.com/jabusuko/a/refs/heads/main/module/f/helpers.lua"))()
+local Helpers = loadstring(game:HttpGet("https://raw.githubusercontent.com/c3iv3r/a/refs/heads/main/module/f/helpers.lua"))()
 
 mainLogger:info("Loading FeatureManager...")
-local FeatureManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/jabusuko/a/refs/heads/main/module/f/featuremanager.lua"))()
+local FeatureManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/c3iv3r/a/refs/heads/main/module/f/featuremanager.lua"))()
 
 -- ===========================
 -- GLOBAL SERVICES & VARIABLES
@@ -49,7 +49,7 @@ _G.NetPath = NetPath
 -- Load InventoryWatcher globally for features that need it
 --[[_G.InventoryWatcher = nil
 pcall(function()
-    _G.InventoryWatcher = loadstring(game:HttpGet("https://raw.githubusercontent.com/jabusuko/a/refs/heads/main/utils/fishit/inventdetect3.lua"))()
+    _G.InventoryWatcher = loadstring(game:HttpGet("https://raw.githubusercontent.com/c3iv3r/a/refs/heads/main/utils/fishit/inventdetect3.lua"))()
 end)]]
 
 _G.SpamFishingActive = false
