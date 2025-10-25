@@ -91,9 +91,9 @@ local FISHING_CONFIGS = {
         chargeTime = 0,
         waitBetween = 0,
         rodSlot = 1,
-        spamDelay = 0.03,  -- Balanced: ga terlalu cepat, ga terlalu lambat
-        recastDelay = 0.08,  -- Small delay untuk server stability
-        postFishDelay = 0.05  -- Delay setelah dapat ikan
+        spamDelay = 0.001,       -- 10ms per spam (original)
+        recastDelay = 0,         -- Instant recast
+        postFishDelay = 0       -- No delay
     },
     ["Slow"] = {
         chargeTime = 1.0,
