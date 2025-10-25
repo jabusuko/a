@@ -63,9 +63,9 @@ local enchantName = Helpers.getEnchantName()
 
 local CancelFishingEvent = ReplicatedStorage.Packages._Index["sleitnick_net@0.2.0"].net["RF/CancelFishingInputs"]
 
---- NOCTIS TITLE
+--- BAHLUL TITLE
 local c = Color3.fromRGB(125, 85, 255)
-local title = ('<font color="#%s">NOCTIS</font>'):format(c:ToHex())
+local title = ('<font color="#%s">BAHLUL</font>'):format(c:ToHex())
 
 -- ===========================
 -- INITIALIZE FEATURE MANAGER
@@ -76,7 +76,7 @@ mainLogger:info(string.format("Features ready: %d/%d", loadedCount, totalCount))
 
 --- === WINDOW === ---
 local Window = Noctis:CreateWindow({
-    Title         = "<b>Noctis</b>",
+    Title         = "<b>BAHLUL</b>",
     Footer        = "Fish It | v0.2.5",
     Icon          = "rbxassetid://123156553209294",
     NotifySide    = "Right",
