@@ -93,7 +93,7 @@ function FeatureManager:InitializeAllFeatures(notifyLib, logger)
         game.StarterGui:SetCore(
         "SendNotification",
         {
-            Title = "Noctis",
+            Title = "BAHLUL MOMENT",
             Text = "Loading Script...",
             Icon = "rbxassetid://123156553209294",
             Duration = 10
