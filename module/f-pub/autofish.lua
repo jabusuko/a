@@ -1,8 +1,8 @@
 -- ===========================
--- AUTO FISH V5 - AGGRESSIVE SPAM VERSION
--- SPAM FishingCompleted MULTIPLE THREADS untuk dapet ikan beruntun
+-- AUTO FISH V5 - ULTRA AGGRESSIVE HEARTBEAT SPAM
+-- SPAM FishingCompleted via RunService.Heartbeat (NO JEDA!)
 -- Pattern tetap sama: BaitSpawned → ReplicateTextEffect detection
--- CHANGE: 3x spam threads dengan delay lebih kecil (0.001s)
+-- CHANGE: Pake Heartbeat buat spam pure tanpa task.wait delay
 -- ===========================
 
 local AutoFishFeature = {}
@@ -51,7 +51,7 @@ end
 local isRunning = false
 local currentMode = "Fast"
 local connection = nil
-local spamConnections = {} -- Multiple spam threads
+local spamConnection = nil -- Single HEARTBEAT spam
 local fishObtainedConnection = nil
 local baitSpawnedConnection = nil
 local replicateTextConnection = nil
@@ -63,7 +63,8 @@ local cancelInProgress = false
 
 -- Spam tracking
 local spamActive = false
-local NUM_SPAM_THREADS = 3 -- Jumlah thread spam parallel
+local spamCounter = 0
+local lastSpamTime = 0
 
 -- BaitSpawned counter sejak start
 local baitSpawnedCount = 0
@@ -77,19 +78,22 @@ local lastBaitSpawnedTime = 0
 local SAFETY_TIMEOUT = 3
 local safetyNetTriggered = false
 
+-- Throttle spam (kirim setiap N frames, 0 = tiap frame)
+local SPAM_THROTTLE = 0 -- 0 = spam tiap frame (GACOR MAX!)
+
 -- Rod configs
 local FISHING_CONFIGS = {
     ["Fast"] = {
         chargeTime = 0,
         waitBetween = 0,
         rodSlot = 1,
-        spamDelay = 0.001 -- ULTRA FAST
+        spamThrottle = 0 -- Tiap frame
     },
     ["Slow"] = {
         chargeTime = 1.0,
         waitBetween = 1,
         rodSlot = 1,
-        spamDelay = 0.01
+        spamThrottle = 2 -- Tiap 2 frame
     }
 }
 
@@ -105,7 +109,7 @@ function AutoFishFeature:Init(guiControls)
     self:SetupReplicateTextHook()
     self:SetupBaitSpawnedHook()
 
-    logger:info("Initialized V5 AGGRESSIVE SPAM - " .. NUM_SPAM_THREADS .. " threads")
+    logger:info("Initialized V5 HEARTBEAT SPAM - Pure frame-based spam!")
     return true
 end
 
@@ -338,6 +342,8 @@ function AutoFishFeature:Start(config)
     currentMode = config.mode or "Fast"
     fishingInProgress = false
     spamActive = false
+    spamCounter = 0
+    lastSpamTime = 0
     baitSpawnedCount = 0
     pendingBaitChecks = {}
     cancelInProgress = false
@@ -345,15 +351,16 @@ function AutoFishFeature:Start(config)
     safetyNetTriggered = false
 
     local cfg = FISHING_CONFIGS[currentMode]
+    SPAM_THROTTLE = cfg.spamThrottle
 
-    logger:info("🚀 Started V5 AGGRESSIVE - " .. NUM_SPAM_THREADS .. " threads, delay: " .. cfg.spamDelay .. "s")
+    logger:info("🚀 Started V5 HEARTBEAT - Throttle: " .. SPAM_THROTTLE .. " frames")
 
     self:SetupReplicateTextHook()
     self:SetupBaitSpawnedHook()
     self:SetupFishObtainedListener()
     
-    -- Start MULTIPLE spam threads
-    self:StartAggressiveSpam(cfg.spamDelay)
+    -- Start HEARTBEAT spam (pure frame-based)
+    self:StartHeartbeatSpam()
     self:StartSafetyNet()
 
     spawn(function()
@@ -372,6 +379,7 @@ function AutoFishFeature:Stop()
     isRunning = false
     fishingInProgress = false
     spamActive = false
+    spamCounter = 0
     baitSpawnedCount = 0
     pendingBaitChecks = {}
     cancelInProgress = false
@@ -385,13 +393,10 @@ function AutoFishFeature:Stop()
         connection = nil
     end
 
-    -- Stop semua spam threads
-    for i, conn in ipairs(spamConnections) do
-        if conn then
-            conn:Disconnect()
-        end
+    if spamConnection then
+        spamConnection:Disconnect()
+        spamConnection = nil
     end
-    spamConnections = {}
 
     if fishObtainedConnection then
         fishObtainedConnection:Disconnect()
@@ -408,7 +413,7 @@ function AutoFishFeature:Stop()
         replicateTextConnection = nil
     end
 
-    logger:info("⛔ Stopped V5 AGGRESSIVE")
+    logger:info("⛔ Stopped V5 HEARTBEAT")
 end
 
 function AutoFishFeature:SetupFishObtainedListener()
@@ -473,25 +478,37 @@ function AutoFishFeature:CastRod()
     return success
 end
 
-function AutoFishFeature:StartAggressiveSpam(delay)
+function AutoFishFeature:StartHeartbeatSpam()
     if spamActive then return end
 
     spamActive = true
-    logger:info("🔥 Starting " .. NUM_SPAM_THREADS .. " AGGRESSIVE spam threads")
+    spamCounter = 0
+    logger:info("🔥 HEARTBEAT SPAM ACTIVE - NON-STOP!")
 
-    -- Start multiple spam threads untuk coverage maksimal
-    for i = 1, NUM_SPAM_THREADS do
-        local threadDelay = delay + (i * 0.0001) -- Slight offset per thread
+    -- Pake Heartbeat biar jalan tiap frame (60 FPS = 60x per detik!)
+    spamConnection = RunService.Heartbeat:Connect(function(deltaTime)
+        if not spamActive or not isRunning then return end
         
-        spawn(function()
-            task.wait(i * 0.01) -- Stagger start
-            
-            while spamActive and isRunning do
-                self:FireCompletion()
-                task.wait(threadDelay)
+        -- Throttle spam (0 = tiap frame, 1 = tiap 2 frame, dst)
+        if SPAM_THROTTLE > 0 then
+            spamCounter = spamCounter + 1
+            if spamCounter % (SPAM_THROTTLE + 1) ~= 0 then
+                return
             end
-        end)
-    end
+        end
+        
+        -- FIRE COMPLETION TIAP FRAME!
+        self:FireCompletion()
+        
+        -- Log spam rate setiap 300 spam
+        if spamCounter % 300 == 0 then
+            local currentTime = tick()
+            local timeDiff = currentTime - lastSpamTime
+            local rate = timeDiff > 0 and (300 / timeDiff) or 0
+            logger:info("💥 Spam rate: " .. string.format("%.1f", rate) .. "/s")
+            lastSpamTime = currentTime
+        end
+    end)
 end
 
 function AutoFishFeature:FireCompletion()
@@ -516,7 +533,8 @@ function AutoFishFeature:GetStatus()
         mode = currentMode,
         inProgress = fishingInProgress,
         spamming = spamActive,
-        spamThreads = NUM_SPAM_THREADS,
+        spamCount = spamCounter,
+        spamThrottle = SPAM_THROTTLE,
         remotesReady = remotesInitialized,
         listenerReady = fishObtainedConnection ~= nil,
         baitHookReady = baitSpawnedConnection ~= nil,
@@ -546,7 +564,7 @@ function AutoFishFeature:GetAnimationInfo()
         baitHookReady = baitSpawnedConnection ~= nil,
         replicateTextHookReady = replicateTextConnection ~= nil,
         safetyNetActive = safetyNetConnection ~= nil,
-        spamThreads = NUM_SPAM_THREADS
+        spamMethod = "Heartbeat"
     }
 end
 
