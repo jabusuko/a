@@ -1,8 +1,9 @@
 -- ===========================
--- AUTO FISH V5 - ULTRA AGGRESSIVE HEARTBEAT SPAM
--- SPAM FishingCompleted via RunService.Heartbeat (NO JEDA!)
--- Pattern tetap sama: BaitSpawned → ReplicateTextEffect detection
--- CHANGE: Pake Heartbeat buat spam pure tanpa task.wait delay
+-- AUTO FISH V5 - ADAPTIVE BURST SPAM
+-- Pattern: Burst spam pas fishing window, adaptive cooldown
+-- Deteksi server rate limit dan adjust spam rate otomatis
+-- BURST: Spam gacor pas window aktif
+-- COOLDOWN: Slow down kalo server ignore
 -- ===========================
 
 local AutoFishFeature = {}
@@ -51,7 +52,7 @@ end
 local isRunning = false
 local currentMode = "Fast"
 local connection = nil
-local spamConnection = nil -- Single HEARTBEAT spam
+local spamConnection = nil
 local fishObtainedConnection = nil
 local baitSpawnedConnection = nil
 local replicateTextConnection = nil
@@ -61,15 +62,30 @@ local fishingInProgress = false
 local remotesInitialized = false
 local cancelInProgress = false
 
--- Spam tracking
+-- Adaptive spam tracking
 local spamActive = false
 local spamCounter = 0
 local lastSpamTime = 0
+local lastFishTime = 0
+local consecutiveFails = 0
+local currentSpamMode = "BURST" -- BURST, MEDIUM, SLOW
 
--- BaitSpawned counter sejak start
+-- Spam modes dengan different rates
+local SPAM_MODES = {
+    BURST = 0,      -- Tiap frame (gacor max)
+    MEDIUM = 1,     -- Tiap 2 frame
+    SLOW = 3,       -- Tiap 4 frame
+    COOLDOWN = 10   -- Tiap 11 frame (recovery)
+}
+
+-- Detection thresholds
+local FAIL_THRESHOLD = 5        -- 5 detik ga dapet ikan = slow down
+local SUCCESS_RESET_TIME = 2    -- Dapet ikan = reset ke BURST
+
+-- BaitSpawned counter
 local baitSpawnedCount = 0
 
--- Tracking untuk deteksi ReplicateTextEffect setelah BaitSpawned
+-- Tracking untuk deteksi ReplicateTextEffect
 local pendingBaitChecks = {}
 local WAIT_WINDOW = 1
 
@@ -78,22 +94,17 @@ local lastBaitSpawnedTime = 0
 local SAFETY_TIMEOUT = 3
 local safetyNetTriggered = false
 
--- Throttle spam (kirim setiap N frames, 0 = tiap frame)
-local SPAM_THROTTLE = 0 -- 0 = spam tiap frame (GACOR MAX!)
-
 -- Rod configs
 local FISHING_CONFIGS = {
     ["Fast"] = {
         chargeTime = 0,
         waitBetween = 0,
-        rodSlot = 1,
-        spamThrottle = 0 -- Tiap frame
+        rodSlot = 1
     },
     ["Slow"] = {
         chargeTime = 1.0,
         waitBetween = 1,
-        rodSlot = 1,
-        spamThrottle = 2 -- Tiap 2 frame
+        rodSlot = 1
     }
 }
 
@@ -109,7 +120,7 @@ function AutoFishFeature:Init(guiControls)
     self:SetupReplicateTextHook()
     self:SetupBaitSpawnedHook()
 
-    logger:info("Initialized V5 HEARTBEAT SPAM - Pure frame-based spam!")
+    logger:info("Initialized V5 ADAPTIVE - Smart burst spam!")
     return true
 end
 
@@ -140,7 +151,6 @@ function AutoFishFeature:SetupReplicateTextHook()
         
         local currentTime = tick()
         
-        -- Mark semua pending checks dalam range waktu
         for id, checkData in pairs(pendingBaitChecks) do
             local timeDiff = currentTime - checkData.timestamp
             if timeDiff >= 0 and timeDiff <= WAIT_WINDOW + 0.2 and not checkData.received then
@@ -180,6 +190,9 @@ function AutoFishFeature:SetupBaitSpawnedHook()
         local checkId = tostring(currentTime) .. "_" .. currentBaitNumber
         
         logger:info("🎯 BaitSpawned #" .. currentBaitNumber)
+        
+        -- BURST MODE ON ketika bait spawn (fishing window aktif!)
+        self:SetSpamMode("BURST")
 
         pendingBaitChecks[checkId] = {
             received = false,
@@ -219,6 +232,13 @@ function AutoFishFeature:SetupBaitSpawnedHook()
     end)
 
     logger:info("BaitSpawned hook ready")
+end
+
+function AutoFishFeature:SetSpamMode(mode)
+    if currentSpamMode == mode then return end
+    
+    currentSpamMode = mode
+    logger:info("🔄 Spam mode: " .. mode)
 end
 
 function AutoFishFeature:StartSafetyNet()
@@ -344,27 +364,26 @@ function AutoFishFeature:Start(config)
     spamActive = false
     spamCounter = 0
     lastSpamTime = 0
+    lastFishTime = tick()
+    consecutiveFails = 0
+    currentSpamMode = "BURST"
     baitSpawnedCount = 0
     pendingBaitChecks = {}
     cancelInProgress = false
     lastBaitSpawnedTime = 0
     safetyNetTriggered = false
 
-    local cfg = FISHING_CONFIGS[currentMode]
-    SPAM_THROTTLE = cfg.spamThrottle
-
-    logger:info("🚀 Started V5 HEARTBEAT - Throttle: " .. SPAM_THROTTLE .. " frames")
+    logger:info("🚀 Started V5 ADAPTIVE - Smart burst spam with rate limit detection")
 
     self:SetupReplicateTextHook()
     self:SetupBaitSpawnedHook()
     self:SetupFishObtainedListener()
     
-    -- Start HEARTBEAT spam (pure frame-based)
-    self:StartHeartbeatSpam()
+    self:StartAdaptiveSpam()
     self:StartSafetyNet()
 
     spawn(function()
-        if not self:EquipRod(cfg.rodSlot) then
+        if not self:EquipRod(FISHING_CONFIGS[currentMode].rodSlot) then
             logger:error("Failed to equip rod")
             return
         end
@@ -413,7 +432,7 @@ function AutoFishFeature:Stop()
         replicateTextConnection = nil
     end
 
-    logger:info("⛔ Stopped V5 HEARTBEAT")
+    logger:info("⛔ Stopped V5 ADAPTIVE")
 end
 
 function AutoFishFeature:SetupFishObtainedListener()
@@ -428,7 +447,15 @@ function AutoFishFeature:SetupFishObtainedListener()
 
     fishObtainedConnection = FishObtainedNotification.OnClientEvent:Connect(function(...)
         if isRunning and not cancelInProgress then
-            logger:info("🎣 FISH!")
+            local currentTime = tick()
+            local timeSinceLast = currentTime - lastFishTime
+            
+            logger:info("🎣 FISH! (gap: " .. string.format("%.2f", timeSinceLast) .. "s)")
+            
+            -- Reset ke BURST mode karena berhasil
+            lastFishTime = currentTime
+            consecutiveFails = 0
+            self:SetSpamMode("BURST")
             
             fishingInProgress = false
             pendingBaitChecks = {}
@@ -478,34 +505,47 @@ function AutoFishFeature:CastRod()
     return success
 end
 
-function AutoFishFeature:StartHeartbeatSpam()
+function AutoFishFeature:StartAdaptiveSpam()
     if spamActive then return end
 
     spamActive = true
     spamCounter = 0
-    logger:info("🔥 HEARTBEAT SPAM ACTIVE - NON-STOP!")
+    logger:info("🔥 ADAPTIVE SPAM ACTIVE")
 
-    -- Pake Heartbeat biar jalan tiap frame (60 FPS = 60x per detik!)
     spamConnection = RunService.Heartbeat:Connect(function(deltaTime)
         if not spamActive or not isRunning then return end
         
-        -- Throttle spam (0 = tiap frame, 1 = tiap 2 frame, dst)
-        if SPAM_THROTTLE > 0 then
+        -- Check kalo udah lama ga dapet ikan = slow down
+        local timeSinceLastFish = tick() - lastFishTime
+        if timeSinceLastFish > FAIL_THRESHOLD and currentSpamMode == "BURST" then
+            consecutiveFails = consecutiveFails + 1
+            if consecutiveFails > 3 then
+                self:SetSpamMode("MEDIUM")
+            end
+        elseif timeSinceLastFish > FAIL_THRESHOLD * 2 and currentSpamMode == "MEDIUM" then
+            self:SetSpamMode("SLOW")
+        elseif timeSinceLastFish > FAIL_THRESHOLD * 3 then
+            self:SetSpamMode("COOLDOWN")
+        end
+        
+        -- Apply throttle based on current mode
+        local throttle = SPAM_MODES[currentSpamMode]
+        if throttle > 0 then
             spamCounter = spamCounter + 1
-            if spamCounter % (SPAM_THROTTLE + 1) ~= 0 then
+            if spamCounter % (throttle + 1) ~= 0 then
                 return
             end
         end
         
-        -- FIRE COMPLETION TIAP FRAME!
+        -- FIRE!
         self:FireCompletion()
         
-        -- Log spam rate setiap 300 spam
-        if spamCounter % 300 == 0 then
+        -- Log every 600 spams
+        if spamCounter % 600 == 0 then
             local currentTime = tick()
             local timeDiff = currentTime - lastSpamTime
-            local rate = timeDiff > 0 and (300 / timeDiff) or 0
-            logger:info("💥 Spam rate: " .. string.format("%.1f", rate) .. "/s")
+            local rate = timeDiff > 0 and (600 / timeDiff) or 0
+            logger:info("💥 Mode: " .. currentSpamMode .. " | Rate: " .. string.format("%.1f", rate) .. "/s | Fails: " .. consecutiveFails)
             lastSpamTime = currentTime
         end
     end)
@@ -523,6 +563,7 @@ end
 
 function AutoFishFeature:GetStatus()
     local timeSinceLastBait = lastBaitSpawnedTime > 0 and (tick() - lastBaitSpawnedTime) or 0
+    local timeSinceLastFish = tick() - lastFishTime
     local pendingCount = 0
     for _ in pairs(pendingBaitChecks) do
         pendingCount = pendingCount + 1
@@ -534,7 +575,10 @@ function AutoFishFeature:GetStatus()
         inProgress = fishingInProgress,
         spamming = spamActive,
         spamCount = spamCounter,
-        spamThrottle = SPAM_THROTTLE,
+        spamMode = currentSpamMode,
+        spamThrottle = SPAM_MODES[currentSpamMode],
+        consecutiveFails = consecutiveFails,
+        timeSinceLastFish = math.floor(timeSinceLastFish),
         remotesReady = remotesInitialized,
         listenerReady = fishObtainedConnection ~= nil,
         baitHookReady = baitSpawnedConnection ~= nil,
@@ -564,7 +608,8 @@ function AutoFishFeature:GetAnimationInfo()
         baitHookReady = baitSpawnedConnection ~= nil,
         replicateTextHookReady = replicateTextConnection ~= nil,
         safetyNetActive = safetyNetConnection ~= nil,
-        spamMethod = "Heartbeat"
+        spamMethod = "Adaptive",
+        currentSpamMode = currentSpamMode
     }
 end
 
