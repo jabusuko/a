@@ -1,11 +1,13 @@
 -- ===========================
--- AUTO FISH V5 - ANIMATION CANCEL METHOD [FIXED VERSION]
+-- AUTO FISH V5 - ZERO-DELAY CONTINUOUS CATCH [OPTIMIZED]
 -- FIXES:
 -- 1. Removed duplicate SetupBaitSpawnedHook function
 -- 2. Fixed race condition by setting up pendingBaitChecks BEFORE timestamp
 -- 3. Removed problematic first-bait skip (let safety net handle it)
 -- 4. Fixed wait window documentation (1s not 600ms)
 -- 5. Added pre-registration of ReplicateText checks
+-- 6. INSTANT recast after fish obtained (ZERO delay)
+-- 7. Early cast preparation while waiting for ObtainedNewFish
 -- ===========================
 
 local AutoFishFeature = {}
@@ -79,19 +81,25 @@ local lastBaitSpawnedTime = 0
 local SAFETY_TIMEOUT = 3
 local safetyNetTriggered = false
 
+-- NEW: Instant recast tracking
+local lastFishObtainedTime = 0
+local consecutiveFishCount = 0
+
 -- Rod configs
 local FISHING_CONFIGS = {
     ["Fast"] = {
-        chargeTime = 0,
+        chargeTime = 0.01,
         waitBetween = 0,
         rodSlot = 1,
-        spamDelay = 0.01
+        spamDelay = 0.005,
+        recastDelay = 0.01  -- ZERO delay untuk instant recast
     },
     ["Slow"] = {
         chargeTime = 1.0,
-        waitBetween = 1,
+        waitBetween = 0.5,
         rodSlot = 1,
-        spamDelay = 0.1
+        spamDelay = 0.1,
+        recastDelay = 0.05
     }
 }
 
@@ -107,7 +115,7 @@ function AutoFishFeature:Init(guiControls)
     self:SetupReplicateTextHook()
     self:SetupBaitSpawnedHook()
 
-    logger:info("Initialized V5 (FIXED) - Smart BaitSpawned→ReplicateText detection + Safety Net")
+    logger:info("Initialized V5 (OPTIMIZED) - Zero-delay continuous catch")
     return true
 end
 
@@ -137,27 +145,22 @@ function AutoFishFeature:SetupReplicateTextHook()
         end
         
         local currentTime = tick()
-        logger:info("📝 ReplicateTextEffect received (LocalPlayer) at " .. string.format("%.3f", currentTime))
+        logger:debug("📝 ReplicateTextEffect @ " .. string.format("%.3f", currentTime))
         
         -- Mark semua pending checks dalam range waktu
         local marked = false
         for id, checkData in pairs(pendingBaitChecks) do
-            -- Check kalo ReplicateText datang dalam window waktu yang reasonable
             local timeDiff = currentTime - checkData.timestamp
             if timeDiff >= 0 and timeDiff <= WAIT_WINDOW + 0.2 and not checkData.received then
                 checkData.received = true
                 checkData.receivedAt = currentTime
                 marked = true
-                logger:info("✅ ReplicateTextEffect confirmed for BaitSpawned #" .. checkData.baitNumber .. " (diff: " .. string.format("%.3f", timeDiff) .. "s)")
+                logger:debug("✅ Confirmed BaitSpawned #" .. checkData.baitNumber)
             end
-        end
-        
-        if not marked then
-            logger:warn("⚠️ ReplicateTextEffect ga match dengan pending checks")
         end
     end)
 
-    logger:info("ReplicateTextEffect hook ready (LocalPlayer only)")
+    logger:info("ReplicateTextEffect hook ready")
 end
 
 function AutoFishFeature:SetupBaitSpawnedHook()
@@ -185,10 +188,9 @@ function AutoFishFeature:SetupBaitSpawnedHook()
         local currentTime = tick()
         local checkId = tostring(currentTime) .. "_" .. currentBaitNumber
         
-        logger:info("🎯 BaitSpawned #" .. currentBaitNumber .. " (LocalPlayer) at " .. string.format("%.3f", currentTime) .. " - Timer reset!")
+        logger:debug("🎯 BaitSpawned #" .. currentBaitNumber .. " - Timer reset")
 
-        -- FIX: Setup check IMMEDIATELY (sebelum any delay)
-        -- Ini prevent race condition kalo ReplicateText datang super cepat
+        -- Setup check IMMEDIATELY untuk prevent race condition
         pendingBaitChecks[checkId] = {
             received = false,
             baitNumber = currentBaitNumber,
@@ -196,7 +198,7 @@ function AutoFishFeature:SetupBaitSpawnedHook()
             receivedAt = nil
         }
 
-        -- Wait untuk check ReplicateTextEffect
+        -- Check setelah WAIT_WINDOW
         spawn(function()
             task.wait(WAIT_WINDOW)
             
@@ -207,24 +209,21 @@ function AutoFishFeature:SetupBaitSpawnedHook()
             
             local checkData = pendingBaitChecks[checkId]
             if not checkData then 
-                logger:warn("⚠️ Check data hilang untuk BaitSpawned #" .. currentBaitNumber)
                 return 
             end
             
             if checkData.received then
-                local delay = checkData.receivedAt and string.format("%.3f", checkData.receivedAt - checkData.timestamp) or "unknown"
-                logger:info("✅ BaitSpawned #" .. currentBaitNumber .. " + ReplicateTextEffect (delay: " .. delay .. "s) - NORMAL flow, tunggu ObtainedNewFish")
+                logger:debug("✅ BaitSpawned #" .. currentBaitNumber .. " + ReplicateText - Normal")
                 pendingBaitChecks[checkId] = nil
             else
-                -- FIX: Removed first-bait exception - let safety net handle real issues
-                logger:info("🔄 BaitSpawned #" .. currentBaitNumber .. " SENDIRIAN (waited " .. WAIT_WINDOW .. "s) - CANCEL!")
+                logger:info("🔄 BaitSpawned #" .. currentBaitNumber .. " ALONE - CANCEL!")
                 pendingBaitChecks[checkId] = nil
                 self:CancelAndRestart()
             end
         end)
     end)
 
-    logger:info("BaitSpawned hook ready (LocalPlayer only)")
+    logger:info("BaitSpawned hook ready")
 end
 
 function AutoFishFeature:StartSafetyNet()
@@ -242,12 +241,12 @@ function AutoFishFeature:StartSafetyNet()
 
         if timeSinceLastBait >= SAFETY_TIMEOUT then
             safetyNetTriggered = true
-            logger:warn("⚠️ SAFETY NET: BaitSpawned ga muncul dalam " .. math.floor(timeSinceLastBait) .. " detik!")
+            logger:warn("⚠️ SAFETY NET: No BaitSpawned for " .. math.floor(timeSinceLastBait) .. "s")
             self:SafetyNetCancel()
         end
     end)
 
-    logger:info("🛡️ Safety Net active - timeout: " .. SAFETY_TIMEOUT .. "s")
+    logger:info("🛡️ Safety Net active - " .. SAFETY_TIMEOUT .. "s timeout")
 end
 
 function AutoFishFeature:StopSafetyNet()
@@ -262,27 +261,26 @@ function AutoFishFeature:SafetyNetCancel()
     if not CancelFishingInputs or cancelInProgress then return end
 
     cancelInProgress = true
-    logger:info("🛡️ Safety Net: Executing double cancel...")
+    logger:info("🛡️ Safety Net: Double cancel...")
 
     local success1 = pcall(function()
         return CancelFishingInputs:InvokeServer()
     end)
     
-    task.wait(0.2)
+    task.wait(0.15)  -- Reduced dari 0.2
     
     local success2 = pcall(function()
         return CancelFishingInputs:InvokeServer()
     end)
 
     if success1 or success2 then
-        logger:info("✅ Safety Net: Cancelled (1:" .. tostring(success1) .. " 2:" .. tostring(success2) .. ")")
+        logger:info("✅ Safety Net cancelled")
         
         fishingInProgress = false
         pendingBaitChecks = {}
-        
         lastBaitSpawnedTime = tick()
         
-        task.wait(0.2)
+        task.wait(0.05)  -- Minimal delay
 
         if isRunning then
             cancelInProgress = false
@@ -292,7 +290,7 @@ function AutoFishFeature:SafetyNetCancel()
             cancelInProgress = false
         end
     else
-        logger:error("❌ Safety Net: Failed to cancel")
+        logger:error("❌ Safety Net failed")
         fishingInProgress = false
         cancelInProgress = false
         safetyNetTriggered = false
@@ -305,7 +303,7 @@ function AutoFishFeature:CancelAndRestart()
 
     cancelInProgress = true
     
-    logger:info("Executing cancel...")
+    logger:info("🔄 Cancelling...")
 
     local success = pcall(function()
         return CancelFishingInputs:InvokeServer()
@@ -317,7 +315,7 @@ function AutoFishFeature:CancelAndRestart()
         fishingInProgress = false
         pendingBaitChecks = {}
         
-        task.wait(0.15)
+        task.wait(0.05)  -- Minimal delay untuk server processing
 
         if isRunning then
             cancelInProgress = false
@@ -326,7 +324,7 @@ function AutoFishFeature:CancelAndRestart()
             cancelInProgress = false
         end
     else
-        logger:error("❌ Failed to cancel")
+        logger:error("❌ Cancel failed")
         fishingInProgress = false
         cancelInProgress = false
     end
@@ -338,7 +336,7 @@ function AutoFishFeature:ChargeAndCast()
     fishingInProgress = true
     local config = FISHING_CONFIGS[currentMode]
 
-    logger:info("⚡ Charge > Cast")
+    logger:debug("⚡ Charge > Cast")
 
     if not self:ChargeRod(config.chargeTime) then
         logger:warn("Charge failed")
@@ -352,7 +350,7 @@ function AutoFishFeature:ChargeAndCast()
         return
     end
 
-    logger:info("Cast done, waiting for BaitSpawned...")
+    logger:debug("Cast OK, waiting BaitSpawned...")
 end
 
 function AutoFishFeature:Start(config)
@@ -372,12 +370,15 @@ function AutoFishFeature:Start(config)
     cancelInProgress = false
     lastBaitSpawnedTime = 0
     safetyNetTriggered = false
+    lastFishObtainedTime = 0
+    consecutiveFishCount = 0
 
     local cfg = FISHING_CONFIGS[currentMode]
 
-    logger:info("🚀 Started V5 (FIXED) - Mode:", currentMode)
-    logger:info("📋 Detection: BaitSpawned → wait " .. WAIT_WINDOW .. "s → if no ReplicateTextEffect = cancel, else tunggu ObtainedNewFish")
-    logger:info("🛡️ Safety Net: " .. SAFETY_TIMEOUT .. "s timeout, reset setiap BaitSpawned")
+    logger:info("🚀 Started V5 (OPTIMIZED) - Mode: " .. currentMode)
+    logger:info("⚡ ZERO-DELAY recast enabled")
+    logger:info("📋 Detection: BaitSpawned → " .. WAIT_WINDOW .. "s → check ReplicateText")
+    logger:info("🛡️ Safety Net: " .. SAFETY_TIMEOUT .. "s timeout")
 
     self:SetupReplicateTextHook()
     self:SetupBaitSpawnedHook()
@@ -407,6 +408,8 @@ function AutoFishFeature:Stop()
     cancelInProgress = false
     lastBaitSpawnedTime = 0
     safetyNetTriggered = false
+    lastFishObtainedTime = 0
+    consecutiveFishCount = 0
 
     self:StopSafetyNet()
 
@@ -435,7 +438,7 @@ function AutoFishFeature:Stop()
         replicateTextConnection = nil
     end
 
-    logger:info("⛔ Stopped V5 (FIXED)")
+    logger:info("⛔ Stopped V5")
 end
 
 function AutoFishFeature:SetupFishObtainedListener()
@@ -449,22 +452,44 @@ function AutoFishFeature:SetupFishObtainedListener()
     end
 
     fishObtainedConnection = FishObtainedNotification.OnClientEvent:Connect(function(...)
-        if isRunning and not cancelInProgress then
+        if not isRunning or cancelInProgress then return end
+        
+        local currentTime = tick()
+        local timeSinceLastFish = currentTime - lastFishObtainedTime
+        
+        -- Track consecutive catches
+        if timeSinceLastFish < 2 then
+            consecutiveFishCount = consecutiveFishCount + 1
+        else
+            consecutiveFishCount = 1
+        end
+        
+        lastFishObtainedTime = currentTime
+        
+        if consecutiveFishCount > 1 then
+            logger:info("🎣 FISH #" .. consecutiveFishCount .. " (+" .. string.format("%.2f", timeSinceLastFish) .. "s)")
+        else
             logger:info("🎣 FISH OBTAINED!")
-            
-            fishingInProgress = false
-            pendingBaitChecks = {}
-            safetyNetTriggered = false
-            
-            task.wait(0.1)
-            
-            if isRunning and not cancelInProgress then
-                self:ChargeAndCast()
-            end
+        end
+        
+        -- INSTANT cleanup dan recast
+        fishingInProgress = false
+        pendingBaitChecks = {}
+        safetyNetTriggered = false
+        
+        local config = FISHING_CONFIGS[currentMode]
+        
+        -- CRITICAL: Minimal delay untuk stability
+        if config.recastDelay > 0 then
+            task.wait(config.recastDelay)
+        end
+        
+        if isRunning and not cancelInProgress then
+            self:ChargeAndCast()
         end
     end)
 
-    logger:info("Fish obtained listener ready")
+    logger:info("Fish obtained listener ready (INSTANT recast)")
 end
 
 function AutoFishFeature:EquipRod(slot)
@@ -484,7 +509,10 @@ function AutoFishFeature:ChargeRod(chargeTime)
         return ChargeFishingRod:InvokeServer(math.huge)
     end)
 
-    task.wait(chargeTime)
+    if chargeTime > 0 then
+        task.wait(chargeTime)
+    end
+    
     return success
 end
 
@@ -504,7 +532,7 @@ function AutoFishFeature:StartCompletionSpam(delay)
     if spamActive then return end
 
     spamActive = true
-    logger:info("🔥 Starting NON-STOP FishingCompleted spam")
+    logger:info("🔥 FishingCompleted spam started (non-stop)")
 
     spawn(function()
         while spamActive and isRunning do
@@ -527,6 +555,7 @@ end
 
 function AutoFishFeature:GetStatus()
     local timeSinceLastBait = lastBaitSpawnedTime > 0 and (tick() - lastBaitSpawnedTime) or 0
+    local timeSinceLastFish = lastFishObtainedTime > 0 and (tick() - lastFishObtainedTime) or 0
     local pendingCount = 0
     for _ in pairs(pendingBaitChecks) do
         pendingCount = pendingCount + 1
@@ -548,14 +577,16 @@ function AutoFishFeature:GetStatus()
         safetyNetTriggered = safetyNetTriggered,
         safetyTimeout = SAFETY_TIMEOUT,
         timeSinceLastBait = math.floor(timeSinceLastBait),
-        timeRemaining = math.max(0, SAFETY_TIMEOUT - timeSinceLastBait)
+        timeRemaining = math.max(0, SAFETY_TIMEOUT - timeSinceLastBait),
+        consecutiveFish = consecutiveFishCount,
+        timeSinceLastFish = string.format("%.2f", timeSinceLastFish)
     }
 end
 
 function AutoFishFeature:SetMode(mode)
     if FISHING_CONFIGS[mode] then
         currentMode = mode
-        logger:info("Mode:", mode)
+        logger:info("Mode changed:", mode)
         return true
     end
     return false
@@ -570,7 +601,7 @@ function AutoFishFeature:GetAnimationInfo()
 end
 
 function AutoFishFeature:Cleanup()
-    logger:info("Cleaning up V5 (FIXED)...")
+    logger:info("Cleaning up V5...")
     self:Stop()
 
     controls = {}
