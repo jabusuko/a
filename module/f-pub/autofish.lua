@@ -62,12 +62,12 @@ local fishCaughtFlag = false
 -- Rod-specific configs
 local FISHING_CONFIGS = {
     ["Fast"] = {
-        chargeTime = 1.0,
+        chargeTime = 0.6,          -- Reduced charge time for faster catch
         waitBetween = 0,
         rodSlot = 1,
-        spamDelay = 0.05,      -- Spam every 50ms
-        maxSpamTime = 20,       -- Stop spam after 20s
-        skipMinigame = true    -- Skip tap-tap animation
+        spamDelay = 0.03,          -- Faster spam (30ms) for quicker catch
+        maxSpamTime = 20,           -- Stop spam after 20s
+        skipMinigame = true,       -- Skip tap-tap animation
     },
     ["Slow"] = {
         chargeTime = 1.0,
