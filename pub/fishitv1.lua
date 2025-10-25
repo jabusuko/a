@@ -114,7 +114,7 @@ local CHANGELOG = table.concat({
     "[+] Added Auto Submit SECRET to Temple Guardian"
 }, "\n")
 local DISCORD = table.concat({
-    "https://discord.gg/3AzvRJFT3M",
+    "https://ichef.bbci.co.uk/ace/ws/640/cpsprodpb/e8be/live/5817be40-e830-11ef-bb33-794ac9966f19.jpg.webp",
 }, "\n")
 
 --- === HOME === ---
