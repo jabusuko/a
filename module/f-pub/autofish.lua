@@ -1,7 +1,8 @@
 -- ===========================
--- AUTO FISH V5 - CONSISTENT SPAM FIX
--- Fix: Improved timing, better error recovery, fallback recast
--- Ensures continuous fishing without random pauses
+-- AUTO FISH V5 - AGGRESSIVE SPAM VERSION
+-- SPAM FishingCompleted MULTIPLE THREADS untuk dapet ikan beruntun
+-- Pattern tetap sama: BaitSpawned → ReplicateTextEffect detection
+-- CHANGE: 3x spam threads dengan delay lebih kecil (0.001s)
 -- ===========================
 
 local AutoFishFeature = {}
@@ -49,49 +50,46 @@ end
 -- Feature state
 local isRunning = false
 local currentMode = "Fast"
-local spamConnection = nil
+local connection = nil
+local spamConnections = {} -- Multiple spam threads
 local fishObtainedConnection = nil
 local baitSpawnedConnection = nil
 local replicateTextConnection = nil
 local safetyNetConnection = nil
-local watchdogConnection = nil
 local controls = {}
+local fishingInProgress = false
 local remotesInitialized = false
+local cancelInProgress = false
 
--- Tracking
+-- Spam tracking
 local spamActive = false
+local NUM_SPAM_THREADS = 3 -- Jumlah thread spam parallel
+
+-- BaitSpawned counter sejak start
 local baitSpawnedCount = 0
+
+-- Tracking untuk deteksi ReplicateTextEffect setelah BaitSpawned
 local pendingBaitChecks = {}
-local WAIT_WINDOW = 1.0
+local WAIT_WINDOW = 1
+
+-- Safety Net tracking
 local lastBaitSpawnedTime = 0
-local lastCastAttemptTime = 0
-local lastFishObtainedTime = 0
-local SAFETY_TIMEOUT = 5  -- Reduced from 10
-local totalFish = 0
-local consecutiveCastFails = 0
+local SAFETY_TIMEOUT = 3
+local safetyNetTriggered = false
 
 -- Rod configs
 local FISHING_CONFIGS = {
     ["Fast"] = {
         chargeTime = 0,
+        waitBetween = 0,
         rodSlot = 1,
-        spamDelay = 0.01,
-        recastDelay = 0,
-        postFishDelay = 0.05  -- Small delay after fish for server sync
+        spamDelay = 0.001 -- ULTRA FAST
     },
-    ["Turbo"] = {
-        chargeTime = 0,
+    ["Slow"] = {
+        chargeTime = 1.0,
+        waitBetween = 1,
         rodSlot = 1,
-        spamDelay = 0.005,
-        recastDelay = 0,
-        postFishDelay = 0.03
-    },
-    ["Ultra"] = {
-        chargeTime = 0,
-        rodSlot = 1,
-        spamDelay = 0.001,
-        recastDelay = 0,
-        postFishDelay = 0.01
+        spamDelay = 0.01
     }
 }
 
@@ -107,12 +105,15 @@ function AutoFishFeature:Init(guiControls)
     self:SetupReplicateTextHook()
     self:SetupBaitSpawnedHook()
 
-    logger:info("Initialized V5 - Consistent spam with watchdog")
+    logger:info("Initialized V5 AGGRESSIVE SPAM - " .. NUM_SPAM_THREADS .. " threads")
     return true
 end
 
 function AutoFishFeature:SetupReplicateTextHook()
-    if not ReplicateTextEffect then return end
+    if not ReplicateTextEffect then
+        logger:warn("ReplicateTextEffect not available")
+        return
+    end
 
     if replicateTextConnection then
         replicateTextConnection:Disconnect()
@@ -120,66 +121,100 @@ function AutoFishFeature:SetupReplicateTextHook()
 
     replicateTextConnection = ReplicateTextEffect.OnClientEvent:Connect(function(data)
         if not isRunning then return end
-        if not data or not data.TextData then return end
-        if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("Head") then return end
-        if data.TextData.AttachTo ~= LocalPlayer.Character.Head then return end
+        
+        if not data or not data.TextData then 
+            return 
+        end
+        
+        if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("Head") then
+            return
+        end
+        
+        if data.TextData.AttachTo ~= LocalPlayer.Character.Head then
+            return
+        end
         
         local currentTime = tick()
         
+        -- Mark semua pending checks dalam range waktu
         for id, checkData in pairs(pendingBaitChecks) do
             local timeDiff = currentTime - checkData.timestamp
             if timeDiff >= 0 and timeDiff <= WAIT_WINDOW + 0.2 and not checkData.received then
                 checkData.received = true
+                checkData.receivedAt = currentTime
+                logger:info("✅ ReplicateTextEffect for BaitSpawned #" .. checkData.baitNumber)
             end
         end
     end)
+
+    logger:info("ReplicateTextEffect hook ready")
 end
 
 function AutoFishFeature:SetupBaitSpawnedHook()
-    if not BaitSpawnedEvent then return end
+    if not BaitSpawnedEvent then
+        logger:warn("BaitSpawnedEvent not available")
+        return
+    end
 
     if baitSpawnedConnection then
         baitSpawnedConnection:Disconnect()
     end
 
     baitSpawnedConnection = BaitSpawnedEvent.OnClientEvent:Connect(function(player, rodName, position)
-        if not isRunning then return end
-        if player ~= LocalPlayer then return end
+        if not isRunning or cancelInProgress then return end
+        
+        if player ~= LocalPlayer then
+            return
+        end
 
         baitSpawnedCount = baitSpawnedCount + 1
         lastBaitSpawnedTime = tick()
-        consecutiveCastFails = 0  -- Reset fail counter
+        safetyNetTriggered = false
         
         local currentBaitNumber = baitSpawnedCount
         local currentTime = tick()
         local checkId = tostring(currentTime) .. "_" .. currentBaitNumber
+        
+        logger:info("🎯 BaitSpawned #" .. currentBaitNumber)
 
         pendingBaitChecks[checkId] = {
             received = false,
             baitNumber = currentBaitNumber,
-            timestamp = currentTime
+            timestamp = currentTime,
+            receivedAt = nil
         }
 
         spawn(function()
             task.wait(WAIT_WINDOW)
             
-            if not isRunning then 
+            if not isRunning or cancelInProgress then 
                 pendingBaitChecks[checkId] = nil
                 return 
             end
             
             local checkData = pendingBaitChecks[checkId]
-            if not checkData then return end
+            if not checkData then 
+                return 
+            end
             
-            if not checkData.received then
-                logger:info("🔄 Bad cast detected, recasting...")
+            if checkData.received then
+                logger:info("✅ NORMAL flow #" .. currentBaitNumber)
                 pendingBaitChecks[checkId] = nil
-                self:ForceRecast()
             else
+                logger:info("🔄 CANCEL #" .. currentBaitNumber)
                 pendingBaitChecks[checkId] = nil
+                
+                if currentBaitNumber == 1 then
+                    logger:warn("⚠️ Skip cancel (first bait)")
+                    return
+                end
+                
+                self:CancelAndRestart()
             end
         end)
     end)
+
+    logger:info("BaitSpawned hook ready")
 end
 
 function AutoFishFeature:StartSafetyNet()
@@ -190,44 +225,19 @@ function AutoFishFeature:StartSafetyNet()
     lastBaitSpawnedTime = tick()
 
     safetyNetConnection = RunService.Heartbeat:Connect(function()
-        if not isRunning then return end
-
-        local timeSinceLastBait = tick() - lastBaitSpawnedTime
-
-        if timeSinceLastBait >= SAFETY_TIMEOUT then
-            logger:warn("⚠️ Safety net: No bait for " .. math.floor(timeSinceLastBait) .. "s")
-            lastBaitSpawnedTime = tick()  -- Reset to prevent spam
-            self:ForceRecast()
-        end
-    end)
-end
-
-function AutoFishFeature:StartWatchdog()
-    if watchdogConnection then
-        watchdogConnection:Disconnect()
-    end
-
-    -- Watchdog: Ensures we're always trying to fish
-    watchdogConnection = RunService.Heartbeat:Connect(function()
-        if not isRunning then return end
+        if not isRunning or cancelInProgress or safetyNetTriggered then return end
 
         local currentTime = tick()
-        local timeSinceLastCast = currentTime - lastCastAttemptTime
-        local timeSinceLastFish = currentTime - lastFishObtainedTime
+        local timeSinceLastBait = currentTime - lastBaitSpawnedTime
 
-        -- If no cast attempt in 3 seconds AND no fish in 3 seconds = stuck
-        if timeSinceLastCast > 3 and timeSinceLastFish > 3 then
-            logger:warn("🔧 Watchdog: Detected stuck state, forcing recast")
-            self:ForceRecast()
+        if timeSinceLastBait >= SAFETY_TIMEOUT then
+            safetyNetTriggered = true
+            logger:warn("⚠️ SAFETY NET TRIGGERED!")
+            self:SafetyNetCancel()
         end
     end)
-end
 
-function AutoFishFeature:StopWatchdog()
-    if watchdogConnection then
-        watchdogConnection:Disconnect()
-        watchdogConnection = nil
-    end
+    logger:info("🛡️ Safety Net active")
 end
 
 function AutoFishFeature:StopSafetyNet()
@@ -235,76 +245,85 @@ function AutoFishFeature:StopSafetyNet()
         safetyNetConnection:Disconnect()
         safetyNetConnection = nil
     end
+    lastBaitSpawnedTime = 0
 end
 
-function AutoFishFeature:ForceRecast()
-    -- Cancel current fishing if any
+function AutoFishFeature:SafetyNetCancel()
+    if not CancelFishingInputs or cancelInProgress then return end
+
+    cancelInProgress = true
+    logger:info("🛡️ Safety Net cancel...")
+
     pcall(function()
-        if CancelFishingInputs then
-            CancelFishingInputs:InvokeServer()
-        end
+        CancelFishingInputs:InvokeServer()
+    end)
+    
+    task.wait(0.2)
+    
+    pcall(function()
+        CancelFishingInputs:InvokeServer()
     end)
 
+    fishingInProgress = false
     pendingBaitChecks = {}
     lastBaitSpawnedTime = tick()
     
-    task.wait(0.05)  -- Minimal delay for server
-    
+    task.wait(0.2)
+
     if isRunning then
+        cancelInProgress = false
+        safetyNetTriggered = false
         self:ChargeAndCast()
+    else
+        cancelInProgress = false
+    end
+end
+
+function AutoFishFeature:CancelAndRestart()
+    if not CancelFishingInputs or cancelInProgress then return end
+
+    cancelInProgress = true
+    
+    logger:info("Cancelling...")
+
+    pcall(function()
+        CancelFishingInputs:InvokeServer()
+    end)
+
+    fishingInProgress = false
+    pendingBaitChecks = {}
+    
+    task.wait(0.15)
+
+    if isRunning then
+        cancelInProgress = false
+        self:ChargeAndCast()
+    else
+        cancelInProgress = false
     end
 end
 
 function AutoFishFeature:ChargeAndCast()
+    if fishingInProgress or cancelInProgress then return end
+
+    fishingInProgress = true
     local config = FISHING_CONFIGS[currentMode]
-    lastCastAttemptTime = tick()
 
-    -- Charge
-    local chargeSuccess = pcall(function()
-        if ChargeFishingRod then
-            ChargeFishingRod:InvokeServer(math.huge)
-        end
-    end)
+    logger:info("⚡ Charge > Cast")
 
-    if not chargeSuccess then
-        consecutiveCastFails = consecutiveCastFails + 1
-        logger:warn("⚠️ Charge failed (" .. consecutiveCastFails .. ")")
-        
-        if consecutiveCastFails >= 3 then
-            logger:warn("Multiple charge fails, retrying in 0.5s")
-            task.wait(0.5)
-            consecutiveCastFails = 0
-        end
-        return false
+    if not self:ChargeRod(config.chargeTime) then
+        logger:warn("Charge failed")
+        fishingInProgress = false
+        return
     end
 
-    if config.chargeTime > 0 then
-        task.wait(config.chargeTime)
+    if not self:CastRod() then
+        logger:warn("Cast failed")
+        fishingInProgress = false
+        return
     end
 
-    -- Cast
-    local castSuccess = pcall(function()
-        if RequestFishing then
-            local y = -139.63
-            local power = 0.9999120558411321
-            RequestFishing:InvokeServer(y, power)
-        end
-    end)
-
-    if not castSuccess then
-        consecutiveCastFails = consecutiveCastFails + 1
-        logger:warn("⚠️ Cast failed (" .. consecutiveCastFails .. ")")
-        
-        if consecutiveCastFails >= 3 then
-            logger:warn("Multiple cast fails, retrying in 0.5s")
-            task.wait(0.5)
-            consecutiveCastFails = 0
-        end
-        return false
-    end
-
-    consecutiveCastFails = 0
-    return true
+    logger:info("Cast done")
 end
 
 function AutoFishFeature:Start(config)
@@ -317,28 +336,25 @@ function AutoFishFeature:Start(config)
 
     isRunning = true
     currentMode = config.mode or "Fast"
+    fishingInProgress = false
     spamActive = false
     baitSpawnedCount = 0
     pendingBaitChecks = {}
+    cancelInProgress = false
     lastBaitSpawnedTime = 0
-    lastCastAttemptTime = 0
-    lastFishObtainedTime = 0
-    totalFish = 0
-    consecutiveCastFails = 0
+    safetyNetTriggered = false
 
     local cfg = FISHING_CONFIGS[currentMode]
 
-    logger:info("🚀 Started V5 - Mode: " .. currentMode)
-    logger:info("⚡ Spam: " .. (cfg.spamDelay * 1000) .. "ms | Safety: " .. SAFETY_TIMEOUT .. "s")
-    logger:info("🔧 Watchdog enabled for consistency")
+    logger:info("🚀 Started V5 AGGRESSIVE - " .. NUM_SPAM_THREADS .. " threads, delay: " .. cfg.spamDelay .. "s")
 
     self:SetupReplicateTextHook()
     self:SetupBaitSpawnedHook()
     self:SetupFishObtainedListener()
     
-    self:StartCompletionSpam(cfg.spamDelay)
+    -- Start MULTIPLE spam threads
+    self:StartAggressiveSpam(cfg.spamDelay)
     self:StartSafetyNet()
-    self:StartWatchdog()
 
     spawn(function()
         if not self:EquipRod(cfg.rodSlot) then
@@ -346,7 +362,6 @@ function AutoFishFeature:Start(config)
             return
         end
 
-        task.wait(0.2)
         self:ChargeAndCast()
     end)
 end
@@ -355,109 +370,172 @@ function AutoFishFeature:Stop()
     if not isRunning then return end
 
     isRunning = false
+    fishingInProgress = false
     spamActive = false
+    baitSpawnedCount = 0
+    pendingBaitChecks = {}
+    cancelInProgress = false
+    lastBaitSpawnedTime = 0
+    safetyNetTriggered = false
 
     self:StopSafetyNet()
-    self:StopWatchdog()
 
-    if spamConnection then spamConnection:Disconnect() spamConnection = nil end
-    if fishObtainedConnection then fishObtainedConnection:Disconnect() fishObtainedConnection = nil end
-    if baitSpawnedConnection then baitSpawnedConnection:Disconnect() baitSpawnedConnection = nil end
-    if replicateTextConnection then replicateTextConnection:Disconnect() replicateTextConnection = nil end
+    if connection then
+        connection:Disconnect()
+        connection = nil
+    end
 
-    logger:info("⛔ Stopped - Total: " .. totalFish)
+    -- Stop semua spam threads
+    for i, conn in ipairs(spamConnections) do
+        if conn then
+            conn:Disconnect()
+        end
+    end
+    spamConnections = {}
+
+    if fishObtainedConnection then
+        fishObtainedConnection:Disconnect()
+        fishObtainedConnection = nil
+    end
+
+    if baitSpawnedConnection then
+        baitSpawnedConnection:Disconnect()
+        baitSpawnedConnection = nil
+    end
+
+    if replicateTextConnection then
+        replicateTextConnection:Disconnect()
+        replicateTextConnection = nil
+    end
+
+    logger:info("⛔ Stopped V5 AGGRESSIVE")
 end
 
 function AutoFishFeature:SetupFishObtainedListener()
-    if not FishObtainedNotification then return end
+    if not FishObtainedNotification then
+        logger:warn("FishObtainedNotification not available")
+        return
+    end
 
     if fishObtainedConnection then
         fishObtainedConnection:Disconnect()
     end
 
     fishObtainedConnection = FishObtainedNotification.OnClientEvent:Connect(function(...)
-        if not isRunning then return end
-        
-        totalFish = totalFish + 1
-        lastFishObtainedTime = tick()
-        
-        local timeSinceLastFish = lastFishObtainedTime - (lastFishObtainedTime - 1)
-        logger:info("🎣 Fish #" .. totalFish)
-        
-        pendingBaitChecks = {}
-        consecutiveCastFails = 0
-        
-        local config = FISHING_CONFIGS[currentMode]
-        
-        -- Small post-fish delay for server sync
-        if config.postFishDelay and config.postFishDelay > 0 then
-            task.wait(config.postFishDelay)
-        end
-        
-        -- Recast delay
-        if config.recastDelay and config.recastDelay > 0 then
-            task.wait(config.recastDelay)
-        end
-        
-        if isRunning then
-            local success = self:ChargeAndCast()
+        if isRunning and not cancelInProgress then
+            logger:info("🎣 FISH!")
             
-            -- If cast failed, force recast after short delay
-            if not success then
-                task.wait(0.2)
-                if isRunning then
-                    self:ForceRecast()
-                end
+            fishingInProgress = false
+            pendingBaitChecks = {}
+            safetyNetTriggered = false
+            
+            task.wait(0.1)
+            
+            if isRunning and not cancelInProgress then
+                self:ChargeAndCast()
             end
         end
     end)
+
+    logger:info("Fish obtained listener ready")
 end
 
 function AutoFishFeature:EquipRod(slot)
     if not EquipTool then return false end
-    return pcall(function() EquipTool:FireServer(slot) end)
+
+    local success = pcall(function()
+        EquipTool:FireServer(slot)
+    end)
+
+    return success
 end
 
-function AutoFishFeature:StartCompletionSpam(delay)
+function AutoFishFeature:ChargeRod(chargeTime)
+    if not ChargeFishingRod then return false end
+
+    local success = pcall(function()
+        return ChargeFishingRod:InvokeServer(math.huge)
+    end)
+
+    task.wait(chargeTime)
+    return success
+end
+
+function AutoFishFeature:CastRod()
+    if not RequestFishing then return false end
+
+    local success = pcall(function()
+        local y = -139.63
+        local power = 0.9999120558411321
+        return RequestFishing:InvokeServer(y, power)
+    end)
+
+    return success
+end
+
+function AutoFishFeature:StartAggressiveSpam(delay)
     if spamActive then return end
 
     spamActive = true
-    logger:info("🔥 Completion spam started")
+    logger:info("🔥 Starting " .. NUM_SPAM_THREADS .. " AGGRESSIVE spam threads")
 
-    spawn(function()
-        while spamActive and isRunning do
-            pcall(function()
-                if FishingCompleted then
-                    FishingCompleted:FireServer()
-                end
-            end)
-            task.wait(delay)
-        end
+    -- Start multiple spam threads untuk coverage maksimal
+    for i = 1, NUM_SPAM_THREADS do
+        local threadDelay = delay + (i * 0.0001) -- Slight offset per thread
+        
+        spawn(function()
+            task.wait(i * 0.01) -- Stagger start
+            
+            while spamActive and isRunning do
+                self:FireCompletion()
+                task.wait(threadDelay)
+            end
+        end)
+    end
+end
+
+function AutoFishFeature:FireCompletion()
+    if not FishingCompleted then return false end
+
+    pcall(function()
+        FishingCompleted:FireServer()
     end)
+
+    return true
 end
 
 function AutoFishFeature:GetStatus()
-    local timeSinceLastCast = lastCastAttemptTime > 0 and (tick() - lastCastAttemptTime) or 0
-    local timeSinceLastFish = lastFishObtainedTime > 0 and (tick() - lastFishObtainedTime) or 0
     local timeSinceLastBait = lastBaitSpawnedTime > 0 and (tick() - lastBaitSpawnedTime) or 0
+    local pendingCount = 0
+    for _ in pairs(pendingBaitChecks) do
+        pendingCount = pendingCount + 1
+    end
     
     return {
         running = isRunning,
         mode = currentMode,
-        totalFish = totalFish,
-        baitCount = baitSpawnedCount,
+        inProgress = fishingInProgress,
         spamming = spamActive,
-        consecutiveFails = consecutiveCastFails,
-        timeSinceLastCast = string.format("%.1f", timeSinceLastCast),
-        timeSinceLastFish = string.format("%.1f", timeSinceLastFish),
-        timeSinceLastBait = string.format("%.1f", timeSinceLastBait)
+        spamThreads = NUM_SPAM_THREADS,
+        remotesReady = remotesInitialized,
+        listenerReady = fishObtainedConnection ~= nil,
+        baitHookReady = baitSpawnedConnection ~= nil,
+        replicateTextHookReady = replicateTextConnection ~= nil,
+        baitSpawnedCount = baitSpawnedCount,
+        pendingChecks = pendingCount,
+        cancelInProgress = cancelInProgress,
+        safetyNetActive = safetyNetConnection ~= nil,
+        safetyNetTriggered = safetyNetTriggered,
+        safetyTimeout = SAFETY_TIMEOUT,
+        timeSinceLastBait = math.floor(timeSinceLastBait),
+        timeRemaining = math.max(0, SAFETY_TIMEOUT - timeSinceLastBait)
     }
 end
 
 function AutoFishFeature:SetMode(mode)
     if FISHING_CONFIGS[mode] then
         currentMode = mode
-        logger:info("Mode changed: " .. mode)
+        logger:info("Mode:", mode)
         return true
     end
     return false
@@ -468,12 +546,14 @@ function AutoFishFeature:GetAnimationInfo()
         baitHookReady = baitSpawnedConnection ~= nil,
         replicateTextHookReady = replicateTextConnection ~= nil,
         safetyNetActive = safetyNetConnection ~= nil,
-        watchdogActive = watchdogConnection ~= nil
+        spamThreads = NUM_SPAM_THREADS
     }
 end
 
 function AutoFishFeature:Cleanup()
+    logger:info("Cleaning up V5...")
     self:Stop()
+
     controls = {}
     remotesInitialized = false
 end
