@@ -88,18 +88,28 @@ local consecutiveFishCount = 0
 -- Rod configs
 local FISHING_CONFIGS = {
     ["Fast"] = {
-        chargeTime = 0.01,
+        chargeTime = 0,
         waitBetween = 0,
         rodSlot = 1,
-        spamDelay = 0.005,
-        recastDelay = 0.01  -- ZERO delay untuk instant recast
+        spamDelay = 0.03,  -- Balanced: ga terlalu cepat, ga terlalu lambat
+        recastDelay = 0.08,  -- Small delay untuk server stability
+        postFishDelay = 0.05  -- Delay setelah dapat ikan
     },
     ["Slow"] = {
         chargeTime = 1.0,
         waitBetween = 0.5,
         rodSlot = 1,
         spamDelay = 0.1,
-        recastDelay = 0.05
+        recastDelay = 0.15,
+        postFishDelay = 0.1
+    },
+    ["Turbo"] = {
+        chargeTime = 0,
+        waitBetween = 0,
+        rodSlot = 1,
+        spamDelay = 0.01,  -- Maximum spam
+        recastDelay = 0,
+        postFishDelay = 0
     }
 }
 
@@ -376,7 +386,7 @@ function AutoFishFeature:Start(config)
     local cfg = FISHING_CONFIGS[currentMode]
 
     logger:info("🚀 Started V5 (OPTIMIZED) - Mode: " .. currentMode)
-    logger:info("⚡ ZERO-DELAY recast enabled")
+    logger:info("⚡ Spam delay: " .. (cfg.spamDelay * 1000) .. "ms | Recast: " .. (cfg.recastDelay * 1000) .. "ms")
     logger:info("📋 Detection: BaitSpawned → " .. WAIT_WINDOW .. "s → check ReplicateText")
     logger:info("🛡️ Safety Net: " .. SAFETY_TIMEOUT .. "s timeout")
 
@@ -458,7 +468,7 @@ function AutoFishFeature:SetupFishObtainedListener()
         local timeSinceLastFish = currentTime - lastFishObtainedTime
         
         -- Track consecutive catches
-        if timeSinceLastFish < 2 then
+        if timeSinceLastFish < 3 then
             consecutiveFishCount = consecutiveFishCount + 1
         else
             consecutiveFishCount = 1
@@ -467,20 +477,25 @@ function AutoFishFeature:SetupFishObtainedListener()
         lastFishObtainedTime = currentTime
         
         if consecutiveFishCount > 1 then
-            logger:info("🎣 FISH #" .. consecutiveFishCount .. " (+" .. string.format("%.2f", timeSinceLastFish) .. "s)")
+            logger:info("🎣 FISH #" .. consecutiveFishCount .. " (Δ" .. string.format("%.3f", timeSinceLastFish) .. "s)")
         else
             logger:info("🎣 FISH OBTAINED!")
         end
         
-        -- INSTANT cleanup dan recast
+        -- Cleanup state
         fishingInProgress = false
         pendingBaitChecks = {}
         safetyNetTriggered = false
         
         local config = FISHING_CONFIGS[currentMode]
         
-        -- CRITICAL: Minimal delay untuk stability
-        if config.recastDelay > 0 then
+        -- BALANCED: Post-fish processing delay
+        if config.postFishDelay and config.postFishDelay > 0 then
+            task.wait(config.postFishDelay)
+        end
+        
+        -- Then recast delay for server stability
+        if config.recastDelay and config.recastDelay > 0 then
             task.wait(config.recastDelay)
         end
         
